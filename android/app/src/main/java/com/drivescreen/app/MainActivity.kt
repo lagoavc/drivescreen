@@ -89,7 +89,7 @@ class MainActivity : AppCompatActivity() {
             context = applicationContext,
             listener = object : BleConnectionManager.Listener {
                 override fun onStatusChanged(status: String) {
-                    bleConnected = status == "ligado"
+                    bleConnected = connectionManager.isConnected
                     connectionStatus.text = "Estado BLE: $status"
                     if (bleConnected) updateMediaState()
                 }

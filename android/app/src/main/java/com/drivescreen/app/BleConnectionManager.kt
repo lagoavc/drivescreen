@@ -54,6 +54,9 @@ internal class BleConnectionManager(
     private var lastInboundAt = 0L
     private var writeInProgress = false
 
+    val isConnected: Boolean
+        get() = handshakeComplete
+
     private val scanTimeout = Runnable {
         stopScan()
         if (running && gatt == null) scheduleScan()
