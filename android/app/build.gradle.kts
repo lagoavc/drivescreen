@@ -7,6 +7,10 @@ android {
     namespace = "com.drivescreen.app"
     compileSdk = 34
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.drivescreen.app"
         minSdk = 26
