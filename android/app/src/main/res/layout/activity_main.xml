@@ -46,7 +46,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:minHeight="56dp"
-            android:text="Autorizar sessões multimédia" />
+            android:text="Autorizar acesso multimédia" />
 
         <TextView
             android:id="@+id/media_status"

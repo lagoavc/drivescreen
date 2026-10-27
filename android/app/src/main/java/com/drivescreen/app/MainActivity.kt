@@ -1,6 +1,7 @@
 package com.drivescreen.app
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,6 +18,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -37,6 +39,7 @@ class MainActivity : AppCompatActivity() {
 
     private var bleConnected = false
     private var sessionListenerRegistered = false
+    private var mediaAccessPromptShown = false
     private var activeController: MediaController? = null
     private val controllerCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) {
@@ -120,7 +123,7 @@ class MainActivity : AppCompatActivity() {
             connectWithPermissions()
         }
         findViewById<Button>(R.id.media_access_button).setOnClickListener {
-            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            openNotificationAccessSettings()
         }
         findViewById<Button>(R.id.send_button).setOnClickListener {
             val text = diagnosticInput.text.toString().trim()
@@ -149,12 +152,41 @@ class MainActivity : AppCompatActivity() {
             unregisterSessionListener()
             setActiveController(null)
             mediaAccessStatus.text = "Multimédia: acesso não autorizado"
+            if (!mediaAccessPromptShown) {
+                mediaAccessPromptShown = true
+                showMediaAccessPrompt()
+            }
             return
         }
 
         mediaAccessStatus.text = "Multimédia: acesso autorizado"
         registerSessionListener()
         refreshActiveSessions()
+    }
+
+    private fun showMediaAccessPrompt() {
+        AlertDialog.Builder(this)
+            .setTitle("Autorizar sessões multimédia")
+            .setMessage(
+                "O Android exige uma autorização especial nas Definições para a app " +
+                    "poder ler o título/artista e controlar a sessão de música ativa. " +
+                    "Ativa o acesso de notificações do DriveScreen. Nesta versão, o " +
+                    "acesso é usado para sessões multimédia; as notificações não são " +
+                    "recolhidas nem enviadas para o dispositivo."
+            )
+            .setPositiveButton("Abrir Definições") { _, _ ->
+                openNotificationAccessSettings()
+            }
+            .setNegativeButton("Agora não", null)
+            .show()
+    }
+
+    private fun openNotificationAccessSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        } catch (exception: ActivityNotFoundException) {
+            mediaAccessStatus.text = "Não foi possível abrir as Definições de notificações"
+        }
     }
 
     private fun hasNotificationListenerAccess(): Boolean {
