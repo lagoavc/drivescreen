@@ -52,6 +52,7 @@ internal class BleConnectionManager(
     private var expectedHelloId = -1
     private var handshakeComplete = false
     private var lastInboundAt = 0L
+    private var writeInProgress = false
 
     private val scanTimeout = Runnable {
         stopScan()
@@ -102,6 +103,14 @@ internal class BleConnectionManager(
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             handler.post {
+                if (this@BleConnectionManager.gatt !== gatt) {
+                    try {
+                        gatt.close()
+                    } catch (exception: SecurityException) {
+                        Log.w(TAG, "Sem permissão para fechar uma ligação GATT antiga.", exception)
+                    }
+                    return@post
+                }
                 if (status != BluetoothGatt.GATT_SUCCESS ||
                     newState != BluetoothProfile.STATE_CONNECTED
                 ) {
@@ -110,9 +119,7 @@ internal class BleConnectionManager(
                     } catch (exception: SecurityException) {
                         Log.w(TAG, "Sem permissão para fechar GATT após desconexão.", exception)
                     }
-                    if (this@BleConnectionManager.gatt === gatt) {
-                        this@BleConnectionManager.gatt = null
-                    }
+                    this@BleConnectionManager.gatt = null
                     clearSession()
                     if (running) scheduleScan()
                     return@post
@@ -133,7 +140,8 @@ internal class BleConnectionManager(
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             handler.post {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
+                if (this@BleConnectionManager.gatt === gatt &&
+                    status == BluetoothGatt.GATT_SUCCESS) {
                     this@BleConnectionManager.mtu = mtu.coerceAtMost(512)
                 }
             }
@@ -141,6 +149,7 @@ internal class BleConnectionManager(
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             handler.post {
+                if (this@BleConnectionManager.gatt !== gatt) return@post
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     disconnectAndRetry("falha ao descobrir serviços")
                     return@post
@@ -193,6 +202,10 @@ internal class BleConnectionManager(
             status: Int
         ) {
             handler.post {
+                if (this@BleConnectionManager.gatt !== gatt ||
+                    descriptor.uuid != CCCD_UUID) {
+                    return@post
+                }
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     disconnectAndRetry("falha ao ativar notificações BLE")
                     return@post
@@ -215,10 +228,19 @@ internal class BleConnectionManager(
             status: Int
         ) {
             handler.post {
-                if (pendingWrites.isNotEmpty()) pendingWrites.removeFirst()
+                if (this@BleConnectionManager.gatt !== gatt ||
+                    characteristic.uuid != BleProtocol.rxUuid) {
+                    return@post
+                }
+                if (!writeInProgress || pendingWrites.isEmpty()) {
+                    Log.w(TAG, "Callback de escrita BLE sem escrita pendente.")
+                    return@post
+                }
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     disconnectAndRetry("falha ao escrever dados BLE")
                 } else {
+                    pendingWrites.removeFirst()
+                    writeInProgress = false
                     writeNextFrame()
                 }
             }
@@ -230,7 +252,7 @@ internal class BleConnectionManager(
         ) {
             @Suppress("DEPRECATION")
             val value = characteristic.value?.copyOf() ?: return
-            acceptNotification(characteristic, value)
+            acceptNotification(gatt, characteristic, value)
         }
 
         override fun onCharacteristicChanged(
@@ -238,7 +260,7 @@ internal class BleConnectionManager(
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
-            acceptNotification(characteristic, value.copyOf())
+            acceptNotification(gatt, characteristic, value.copyOf())
         }
     }
 
@@ -344,11 +366,13 @@ internal class BleConnectionManager(
     }
 
     private fun acceptNotification(
+        sourceGatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray
     ) {
         if (characteristic.uuid != BleProtocol.txUuid) return
         handler.post {
+            if (this@BleConnectionManager.gatt !== sourceGatt) return@post
             try {
                 val json = assembler.accept(value) ?: return@post
                 lastInboundAt = android.os.SystemClock.elapsedRealtime()
@@ -431,7 +455,7 @@ internal class BleConnectionManager(
     private fun writeNextFrame(characteristic: BluetoothGattCharacteristic? = rx) {
         val currentGatt = gatt ?: return
         val currentCharacteristic = characteristic ?: return
-        if (pendingWrites.isEmpty()) return
+        if (writeInProgress || pendingWrites.isEmpty()) return
         try {
             @Suppress("DEPRECATION")
             currentCharacteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
@@ -440,6 +464,8 @@ internal class BleConnectionManager(
             @Suppress("DEPRECATION")
             if (!currentGatt.writeCharacteristic(currentCharacteristic)) {
                 disconnectAndRetry("escrita BLE recusada")
+            } else {
+                writeInProgress = true
             }
         } catch (exception: SecurityException) {
             Log.e(TAG, "Sem permissão para escrever BLE.", exception)
@@ -474,6 +500,7 @@ internal class BleConnectionManager(
         mtu = 23
         expectedHelloId = -1
         handshakeComplete = false
+        writeInProgress = false
         pendingWrites.clear()
         assembler.reset()
         handler.removeCallbacks(pingTask)
