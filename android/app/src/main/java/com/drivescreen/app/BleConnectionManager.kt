@@ -315,6 +315,26 @@ internal class BleConnectionManager(
         sendMessage("MEDIA_STATE", payload)
     }
 
+    fun sendMediaCover(jpeg: ByteArray, width: Int, height: Int): Boolean {
+        if (!handshakeComplete) return false
+        return try {
+            pendingWrites.addAll(
+                BleProtocol.encodeMediaCover(jpeg, width, height, frameId++, mtu)
+            )
+            writeNextFrame()
+            true
+        } catch (exception: IllegalArgumentException) {
+            Log.e(TAG, "Não foi possível codificar a capa JPEG.", exception)
+            listener.onStatusChanged("capa de álbum inválida")
+            false
+        }
+    }
+
+    fun clearMediaCover(): Boolean {
+        if (!handshakeComplete) return false
+        return sendMessage("MEDIA_COVER_CLEAR", JSONObject()) != null
+    }
+
     private fun startScan() {
         if (!running || gatt != null || scanning) return
         if (!hasBluetoothPermissions()) {

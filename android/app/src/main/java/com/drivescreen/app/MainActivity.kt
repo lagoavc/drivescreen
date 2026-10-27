@@ -5,7 +5,10 @@ import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadata
+import android.net.Uri
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
@@ -14,6 +17,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -22,8 +26,18 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 class MainActivity : AppCompatActivity() {
+    private data class AlbumCover(val jpeg: ByteArray, val width: Int, val height: Int)
+
+    companion object {
+        private const val TAG = "DriveScreen"
+        private const val MAX_COVER_JPEG_BYTES = 1024
+        private const val MAX_COVER_SIDE = 96
+    }
+
     private lateinit var connectionStatus: TextView
     private lateinit var diagnosticResult: TextView
     private lateinit var deviceMessage: TextView
@@ -40,6 +54,11 @@ class MainActivity : AppCompatActivity() {
     private var bleConnected = false
     private var sessionListenerRegistered = false
     private var mediaAccessPromptShown = false
+    private var lastSentCover: ByteArray? = null
+    private var lastSentCoverWidth = 0
+    private var cachedCoverMetadata: MediaMetadata? = null
+    private var cachedCover: AlbumCover? = null
+    private var coverCacheInitialized = false
     private var activeController: MediaController? = null
     private val controllerCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) {
@@ -89,7 +108,12 @@ class MainActivity : AppCompatActivity() {
             context = applicationContext,
             listener = object : BleConnectionManager.Listener {
                 override fun onStatusChanged(status: String) {
+                    val wasConnected = bleConnected
                     bleConnected = connectionManager.isConnected
+                    if (wasConnected && !bleConnected) {
+                        lastSentCover = null
+                        lastSentCoverWidth = 0
+                    }
                     connectionStatus.text = "Estado BLE: $status"
                     if (bleConnected) updateMediaState()
                 }
@@ -285,7 +309,118 @@ class MainActivity : AppCompatActivity() {
         if (active && controller != null) {
             payload.put("app", truncateUtf8(controller.packageName, 48))
         }
-        if (bleConnected) connectionManager.sendMediaState(payload)
+        if (bleConnected) {
+            connectionManager.sendMediaState(payload)
+            syncMediaCover(if (active) metadata else null)
+        }
+    }
+
+    private fun syncMediaCover(metadata: MediaMetadata?) {
+        if (!coverCacheInitialized || cachedCoverMetadata !== metadata) {
+            cachedCoverMetadata = metadata
+            cachedCover = metadata?.let(::encodeAlbumCover)
+            coverCacheInitialized = true
+        }
+        val cover = cachedCover
+        val previous = lastSentCover
+        if ((cover != null && cover.width == lastSentCoverWidth &&
+                cover.jpeg.contentEquals(previous ?: byteArrayOf())) ||
+            (cover == null && previous == null)) {
+            return
+        }
+
+        val sent = if (cover == null) {
+            connectionManager.clearMediaCover()
+        } else {
+            connectionManager.sendMediaCover(cover.jpeg, cover.width, cover.height)
+        }
+        if (sent) {
+            lastSentCover = cover?.jpeg?.copyOf()
+            lastSentCoverWidth = cover?.width ?: 0
+        }
+    }
+
+    private fun encodeAlbumCover(metadata: MediaMetadata): AlbumCover? {
+        val source = metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+            ?: metadata.getBitmap(MediaMetadata.METADATA_KEY_ART)
+            ?: loadAlbumArtUri(metadata)
+            ?: return null
+        if (source.width <= 0 || source.height <= 0) return null
+
+        val cropSize = minOf(source.width, source.height)
+        val crop = Bitmap.createBitmap(
+            source,
+            (source.width - cropSize) / 2,
+            (source.height - cropSize) / 2,
+            cropSize,
+            cropSize
+        )
+        try {
+            var side = MAX_COVER_SIDE
+            while (side >= 48) {
+                val scaled = Bitmap.createScaledBitmap(crop, side, side, true)
+                try {
+                    for (quality in intArrayOf(70, 60, 50, 40)) {
+                        val output = ByteArrayOutputStream()
+                        if (!scaled.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
+                            Log.e(TAG, "O Android não conseguiu comprimir a capa do álbum.")
+                            return null
+                        }
+                        val jpeg = output.toByteArray()
+                        if (jpeg.size <= MAX_COVER_JPEG_BYTES) {
+                            return AlbumCover(jpeg, side, side)
+                        }
+                    }
+                } finally {
+                    if (scaled !== crop) scaled.recycle()
+                }
+                side /= 2
+            }
+        } finally {
+            if (crop !== source) crop.recycle()
+        }
+        Log.w(TAG, "A capa do álbum excede o limite de transferência BLE.")
+        return null
+    }
+
+    private fun loadAlbumArtUri(metadata: MediaMetadata): Bitmap? {
+        val uriText = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
+            ?: metadata.getString(MediaMetadata.METADATA_KEY_ART_URI)
+            ?: return null
+        val uri = Uri.parse(uriText)
+        val scheme = uri.scheme
+        if (scheme != "content" && scheme != "file" && scheme != "android.resource") {
+            Log.w(TAG, "URI da capa não suportado: $scheme")
+            return null
+        }
+
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, bounds)
+            }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                Log.w(TAG, "A URI da capa não contém uma imagem descodificável.")
+                return null
+            }
+
+            var sampleSize = 1
+            val largestSide = maxOf(bounds.outWidth, bounds.outHeight)
+            while (largestSide / sampleSize > MAX_COVER_SIDE * 2) sampleSize *= 2
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, options)
+            }
+        } catch (exception: IOException) {
+            Log.w(TAG, "Não foi possível abrir a URI da capa.", exception)
+            null
+        } catch (exception: SecurityException) {
+            Log.w(TAG, "Sem acesso à URI da capa.", exception)
+            null
+        }
     }
 
     private fun controlActiveSession(command: String) {

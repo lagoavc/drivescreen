@@ -14,12 +14,15 @@ internal object BleProtocol {
     val rxUuid: UUID = UUID.fromString("4a9f5d80-6b13-4c28-9e40-7f6d2b830001")
     val txUuid: UUID = UUID.fromString("4a9f5d80-6b13-4c28-9e40-7f6d2b830002")
 
-    const val protocolVersion = "1.0.0"
+    const val protocolVersion = "1.1.0"
     const val maxMessageSize = 2048
+    const val maxMediaCoverSize = 1024
     private const val headerSize = 8
+    private const val coverHeaderSize = 10
     private const val maxFrameSize = 512
     private const val magic0 = 0xD5
     private const val magic1 = 0x53
+    private const val coverMagic1 = 0x43
 
     fun encode(
         message: JSONObject,
@@ -50,6 +53,50 @@ internal object BleProtocol {
                 .put(fragmentCount.toByte())
                 .putShort(json.size.toShort())
                 .put(json, offset, length)
+                .array()
+        }
+    }
+
+    fun encodeMediaCover(
+        jpeg: ByteArray,
+        width: Int,
+        height: Int,
+        frameId: Int,
+        mtu: Int
+    ): List<ByteArray> {
+        require(width == height && (width == 48 || width == 96)) {
+            "A capa deve ser quadrada e ter 48 ou 96 píxeis."
+        }
+        require(
+            jpeg.size in 4..maxMediaCoverSize &&
+                jpeg[0] == 0xFF.toByte() &&
+                jpeg[1] == 0xD8.toByte() &&
+                jpeg[jpeg.lastIndex - 1] == 0xFF.toByte() &&
+                jpeg[jpeg.lastIndex] == 0xD9.toByte()
+        ) {
+            "A capa JPEG está vazia, inválida ou excede o limite."
+        }
+
+        val effectiveFrameSize = minOf(mtu - 3, maxFrameSize)
+        val payloadLimit = effectiveFrameSize - coverHeaderSize
+        require(payloadLimit > 0) { "MTU BLE insuficiente para o cabeçalho da capa." }
+        val fragmentCount = ceil(jpeg.size.toDouble() / payloadLimit).toInt()
+        require(fragmentCount in 1..255) { "A capa exige demasiados fragmentos." }
+
+        return (0 until fragmentCount).map { index ->
+            val offset = index * payloadLimit
+            val length = minOf(payloadLimit, jpeg.size - offset)
+            ByteBuffer.allocate(coverHeaderSize + length)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put(magic0.toByte())
+                .put(coverMagic1.toByte())
+                .putShort(frameId.toShort())
+                .put(index.toByte())
+                .put(fragmentCount.toByte())
+                .putShort(jpeg.size.toShort())
+                .put(width.toByte())
+                .put(height.toByte())
+                .put(jpeg, offset, length)
                 .array()
         }
     }
