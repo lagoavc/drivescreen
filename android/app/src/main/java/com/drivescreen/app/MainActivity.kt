@@ -1,22 +1,61 @@
 package com.drivescreen.app
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaMetadata
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
     private lateinit var connectionStatus: TextView
     private lateinit var diagnosticResult: TextView
     private lateinit var deviceMessage: TextView
     private lateinit var diagnosticInput: EditText
+    private lateinit var mediaAccessStatus: TextView
+    private lateinit var mediaStatus: TextView
     private lateinit var connectionManager: BleConnectionManager
+    private lateinit var mediaSessionManager: MediaSessionManager
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val listenerComponent
+        get() = ComponentName(this, DriveScreenNotificationListenerService::class.java)
+
+    private var bleConnected = false
+    private var sessionListenerRegistered = false
+    private var activeController: MediaController? = null
+    private val controllerCallback = object : MediaController.Callback() {
+        override fun onMetadataChanged(metadata: MediaMetadata?) {
+            updateMediaState()
+        }
+
+        override fun onPlaybackStateChanged(state: PlaybackState?) {
+            updateMediaState()
+        }
+
+        override fun onSessionDestroyed() {
+            refreshActiveSessions()
+        }
+    }
+
+    private val activeSessionsListener =
+        MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
+            selectActiveSession(controllers.orEmpty())
+        }
 
     private val permissionRequest =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -39,15 +78,20 @@ class MainActivity : AppCompatActivity() {
         diagnosticResult = findViewById(R.id.diagnostic_result)
         deviceMessage = findViewById(R.id.device_message)
         diagnosticInput = findViewById(R.id.diagnostic_input)
+        mediaAccessStatus = findViewById(R.id.media_access_status)
+        mediaStatus = findViewById(R.id.media_status)
+        mediaSessionManager = getSystemService(MediaSessionManager::class.java)
 
         connectionManager = BleConnectionManager(
             context = applicationContext,
             listener = object : BleConnectionManager.Listener {
                 override fun onStatusChanged(status: String) {
+                    bleConnected = status == "ligado"
                     connectionStatus.text = "Estado BLE: $status"
+                    if (bleConnected) updateMediaState()
                 }
 
-                override fun onMessage(message: org.json.JSONObject) {
+                override fun onMessage(message: JSONObject) {
                     when (message.optString("type")) {
                         "DIAGNOSTIC_REPLY" -> {
                             val payload = message.optJSONObject("payload")
@@ -65,11 +109,18 @@ class MainActivity : AppCompatActivity() {
                 override fun onDeviceMessage(text: String) {
                     deviceMessage.text = "Última resposta do dispositivo: $text"
                 }
+
+                override fun onMediaCommand(command: String) {
+                    controlActiveSession(command)
+                }
             }
         )
 
         findViewById<Button>(R.id.connect_button).setOnClickListener {
             connectWithPermissions()
+        }
+        findViewById<Button>(R.id.media_access_button).setOnClickListener {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }
         findViewById<Button>(R.id.send_button).setOnClickListener {
             val text = diagnosticInput.text.toString().trim()
@@ -81,9 +132,169 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshNotificationAccess()
+    }
+
     override fun onDestroy() {
+        unregisterSessionListener()
+        activeController?.unregisterCallback(controllerCallback)
         connectionManager.stop()
         super.onDestroy()
+    }
+
+    private fun refreshNotificationAccess() {
+        if (!hasNotificationListenerAccess()) {
+            unregisterSessionListener()
+            setActiveController(null)
+            mediaAccessStatus.text = "Multimédia: acesso não autorizado"
+            return
+        }
+
+        mediaAccessStatus.text = "Multimédia: acesso autorizado"
+        registerSessionListener()
+        refreshActiveSessions()
+    }
+
+    private fun hasNotificationListenerAccess(): Boolean {
+        val enabledListeners = Settings.Secure.getString(
+            contentResolver,
+            "enabled_notification_listeners"
+        ).orEmpty()
+        return enabledListeners.split(':').any { it == listenerComponent.flattenToString() }
+    }
+
+    private fun registerSessionListener() {
+        if (sessionListenerRegistered) return
+        try {
+            mediaSessionManager.addOnActiveSessionsChangedListener(
+                activeSessionsListener,
+                listenerComponent,
+                mainHandler
+            )
+            sessionListenerRegistered = true
+        } catch (exception: SecurityException) {
+            mediaAccessStatus.text = "Multimédia: acesso ao sistema recusado"
+        }
+    }
+
+    private fun unregisterSessionListener() {
+        if (!sessionListenerRegistered) return
+        mediaSessionManager.removeOnActiveSessionsChangedListener(activeSessionsListener)
+        sessionListenerRegistered = false
+    }
+
+    private fun refreshActiveSessions() {
+        if (!hasNotificationListenerAccess()) {
+            setActiveController(null)
+            return
+        }
+        try {
+            selectActiveSession(mediaSessionManager.getActiveSessions(listenerComponent))
+        } catch (exception: SecurityException) {
+            mediaAccessStatus.text = "Multimédia: acesso ao sistema recusado"
+            setActiveController(null)
+        }
+    }
+
+    private fun selectActiveSession(controllers: List<MediaController>) {
+        val selected = controllers.firstOrNull {
+            it.playbackState?.state == PlaybackState.STATE_PLAYING
+        } ?: controllers.firstOrNull {
+            it.playbackState != null || it.metadata != null
+        }
+        setActiveController(selected)
+    }
+
+    private fun setActiveController(controller: MediaController?) {
+        if (activeController?.sessionToken == controller?.sessionToken) {
+            updateMediaState()
+            return
+        }
+        activeController?.unregisterCallback(controllerCallback)
+        activeController = controller
+        activeController?.registerCallback(controllerCallback, mainHandler)
+        updateMediaState()
+    }
+
+    private fun updateMediaState() {
+        val controller = activeController
+        val metadata = controller?.metadata
+        val playback = controller?.playbackState
+        val active = controller != null && (metadata != null || playback != null)
+        val playing = playback?.state == PlaybackState.STATE_PLAYING
+
+        mediaStatus.text = when {
+            !hasNotificationListenerAccess() -> "Autoriza o acesso para ler sessões multimédia"
+            !active -> "Sem sessão multimédia ativa"
+            playing -> "A reproduzir"
+            else -> "Sessão ativa em pausa"
+        }
+
+        val payload = JSONObject()
+            .put("active", active)
+            .put("playing", playing)
+            .put("source", if (active) "REAL" else "NONE")
+        if (active && metadata != null) {
+            metadata.getString(MediaMetadata.METADATA_KEY_TITLE)
+                ?.let { payload.put("title", truncateUtf8(it, 96)) }
+            metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                ?.let { payload.put("artist", truncateUtf8(it, 96)) }
+            metadata.getString(MediaMetadata.METADATA_KEY_ALBUM)
+                ?.let { payload.put("album", truncateUtf8(it, 96)) }
+            metadata.getLong(MediaMetadata.METADATA_KEY_DURATION)
+                .takeIf { it > 0L }
+                ?.let { payload.put("duration_ms", it) }
+        }
+        if (active && playback != null && playback.position >= 0L) {
+            payload.put("position_ms", playback.position)
+        }
+        if (active && controller != null) {
+            payload.put("app", truncateUtf8(controller.packageName, 48))
+        }
+        if (bleConnected) connectionManager.sendMediaState(payload)
+    }
+
+    private fun controlActiveSession(command: String) {
+        val controller = activeController
+        val playback = controller?.playbackState
+        if (controller == null || playback == null) {
+            mediaStatus.text = "Sem sessão compatível para controlar"
+            return
+        }
+
+        val requiredAction = when (command) {
+            "play" -> PlaybackState.ACTION_PLAY
+            "pause" -> PlaybackState.ACTION_PAUSE
+            "previous" -> PlaybackState.ACTION_SKIP_TO_PREVIOUS
+            "next" -> PlaybackState.ACTION_SKIP_TO_NEXT
+            else -> return
+        }
+        if (playback.actions and requiredAction == 0L) {
+            mediaStatus.text = "A sessão ativa não suporta este comando"
+            return
+        }
+
+        try {
+            when (command) {
+                "play" -> controller.transportControls.play()
+                "pause" -> controller.transportControls.pause()
+                "previous" -> controller.transportControls.skipToPrevious()
+                "next" -> controller.transportControls.skipToNext()
+            }
+        } catch (exception: SecurityException) {
+            mediaStatus.text = "O Android recusou o controlo multimédia"
+        }
+    }
+
+    private fun truncateUtf8(value: String, maxBytes: Int): String {
+        var end = value.length
+        while (end > 0 && value.substring(0, end).toByteArray(Charsets.UTF_8).size > maxBytes) {
+            end--
+            if (end > 0 && Character.isHighSurrogate(value[end - 1])) end--
+        }
+        return value.substring(0, end)
     }
 
     private fun connectWithPermissions() {

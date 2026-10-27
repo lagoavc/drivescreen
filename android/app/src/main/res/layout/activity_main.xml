@@ -34,6 +34,29 @@
             android:text="Ligar ao DriveScreen" />
 
         <TextView
+            android:id="@+id/media_access_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Multimédia: acesso não autorizado"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/media_access_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="56dp"
+            android:text="Autorizar sessões multimédia" />
+
+        <TextView
+            android:id="@+id/media_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Sem sessão multimédia ativa"
+            android:textSize="14sp" />
+
+        <TextView
             android:id="@+id/diagnostic_result"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

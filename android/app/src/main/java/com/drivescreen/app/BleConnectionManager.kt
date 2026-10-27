@@ -33,6 +33,7 @@ internal class BleConnectionManager(
         fun onStatusChanged(status: String)
         fun onMessage(message: JSONObject)
         fun onDeviceMessage(text: String)
+        fun onMediaCommand(command: String)
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -284,6 +285,11 @@ internal class BleConnectionManager(
         }
     }
 
+    fun sendMediaState(payload: JSONObject) {
+        if (!handshakeComplete) return
+        sendMessage("MEDIA_STATE", payload)
+    }
+
     private fun startScan() {
         if (!running || gatt != null || scanning) return
         if (!hasBluetoothPermissions()) {
@@ -377,6 +383,14 @@ internal class BleConnectionManager(
                         listener.onDeviceMessage(
                             message.optJSONObject("payload")?.optString("text").orEmpty()
                         )
+                    }
+                    "MEDIA_CMD" -> {
+                        val command = message.optJSONObject("payload")?.optString("cmd").orEmpty()
+                        if (command !in setOf("play", "pause", "previous", "next")) {
+                            listener.onStatusChanged("comando multimédia desconhecido")
+                        } else {
+                            listener.onMediaCommand(command)
+                        }
                     }
                     else -> listener.onMessage(message)
                 }
