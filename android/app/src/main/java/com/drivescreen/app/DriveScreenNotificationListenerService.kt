@@ -150,17 +150,19 @@ class DriveScreenNotificationListenerService : NotificationListenerService() {
                 value
             }
         }
-        return if (matched == null) {
-            NavigationUpdate("stale", "NONE", "none", "", null, provider)
-        } else {
-            NavigationUpdate(
-                state = "navigating",
-                source = "REAL",
-                maneuver = matched.second,
-                instruction = content,
-                distanceM = distance,
-                provider = provider
-            )
+        if (content.isBlank()) {
+            return NavigationUpdate("stale", "NONE", "none", "", null, provider)
         }
+
+        // OsmAnd can phrase maneuvers in ways not covered by the arrow parser.
+        // Keep the real notification text flowing to the screen in that case.
+        return NavigationUpdate(
+            state = "navigating",
+            source = "REAL",
+            maneuver = matched?.second ?: "none",
+            instruction = content,
+            distanceM = distance,
+            provider = provider
+        )
     }
 }
