@@ -168,12 +168,8 @@ class MainActivity : AppCompatActivity() {
         refreshNotificationAccess()
     }
 
-    override fun onPause() {
-        DriveScreenNotificationStore.clearObserver()
-        super.onPause()
-    }
-
     override fun onDestroy() {
+        DriveScreenNotificationStore.clearObserver()
         unregisterSessionListener()
         activeController?.unregisterCallback(controllerCallback)
         connectionManager.stop()
