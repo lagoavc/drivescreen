@@ -25,6 +25,9 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     companion object {
@@ -44,6 +47,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var mediaSessionManager: MediaSessionManager
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val phoneStatusRefresh = object : Runnable {
+        override fun run() {
+            if (bleConnected) sendNavigationState()
+            mainHandler.postDelayed(this, 30_000L)
+        }
+    }
     private val listenerComponent
         get() = ComponentName(this, DriveScreenNotificationListenerService::class.java)
 
@@ -109,7 +118,7 @@ class MainActivity : AppCompatActivity() {
                     connectionStatus.text = "Estado BLE: $status"
                     if (bleConnected) {
                         updateMediaState()
-                        connectionManager.sendNavigationUpdate(latestNavigation)
+                        sendNavigationState()
                         connectionManager.sendNotificationList(latestNotifications, privacyMode)
                     }
                 }
@@ -161,6 +170,7 @@ class MainActivity : AppCompatActivity() {
                 connectionManager.sendDiagnostic(text)
             }
         }
+        mainHandler.postDelayed(phoneStatusRefresh, 30_000L)
     }
 
     override fun onResume() {
@@ -169,6 +179,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(phoneStatusRefresh)
         DriveScreenNotificationStore.clearObserver()
         unregisterSessionListener()
         activeController?.unregisterCallback(controllerCallback)
@@ -225,7 +236,16 @@ class MainActivity : AppCompatActivity() {
             update.source == "REAL" -> "Instrução recebida de ${update.provider}"
             else -> "Navegação ativa; instrução ainda não reconhecida"
         }
-        if (bleConnected) connectionManager.sendNavigationUpdate(update)
+        if (bleConnected) {
+            val clock = SimpleDateFormat("HH:mm", Locale.US).format(Date())
+            val locationMode = Settings.Secure.getInt(
+                contentResolver,
+                Settings.Secure.LOCATION_MODE,
+                Settings.Secure.LOCATION_MODE_OFF
+            )
+            val gpsEnabled = locationMode != Settings.Secure.LOCATION_MODE_OFF
+            connectionManager.sendNavigationUpdate(update, clock, gpsEnabled)
+        }
     }
 
     private fun showMediaAccessPrompt() {

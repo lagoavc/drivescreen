@@ -315,10 +315,14 @@ internal class BleConnectionManager(
         sendMessage("MEDIA_STATE", payload)
     }
 
-    fun sendNavigationUpdate(update: NavigationUpdate?) {
+    fun sendNavigationUpdate(update: NavigationUpdate?, phoneClock: String, gpsEnabled: Boolean) {
         if (!handshakeComplete) return
         val payload = if (update == null) {
-            JSONObject().put("state", "idle").put("source", "NONE")
+            JSONObject()
+                .put("state", "idle")
+                .put("source", "NONE")
+                .put("phone_clock", phoneClock)
+                .put("gps_enabled", gpsEnabled)
         } else {
             JSONObject()
                 .put("state", update.state)
@@ -326,6 +330,8 @@ internal class BleConnectionManager(
                 .put("maneuver", update.maneuver)
                 .put("provider", update.provider)
                 .put("received_at_ms", android.os.SystemClock.elapsedRealtime())
+                .put("phone_clock", phoneClock)
+                .put("gps_enabled", gpsEnabled)
                 .apply {
                     if (update.instruction.isNotBlank()) {
                         put("instruction", truncateUtf8(update.instruction, 128))
