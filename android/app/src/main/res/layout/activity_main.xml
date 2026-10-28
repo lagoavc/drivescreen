@@ -18,6 +18,38 @@
             android:textStyle="bold" />
 
         <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Navegação OsmAnd"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/navigation_destination"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Morada ou coordenadas"
+            android:inputType="textCapSentences"
+            android:minHeight="56dp"
+            android:singleLine="true" />
+
+        <Button
+            android:id="@+id/start_navigation_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="56dp"
+            android:text="Navegar com OsmAnd" />
+
+        <TextView
+            android:id="@+id/navigation_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Introduz um destino para o abrir no OsmAnd"
+            android:textSize="14sp" />
+
+        <TextView
             android:id="@+id/connection_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -46,7 +78,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:minHeight="56dp"
-            android:text="Autorizar acesso multimédia" />
+            android:text="Autorizar multimédia/notificações" />
 
         <TextView
             android:id="@+id/media_status"
@@ -54,6 +86,28 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="Sem sessão multimédia ativa"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Notificações e privacidade"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <Switch
+            android:id="@+id/notification_privacy_switch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="56dp"
+            android:text="Ocultar conteúdo das notificações" />
+
+        <TextView
+            android:id="@+id/notification_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Notificações: acesso não autorizado"
             android:textSize="14sp" />
 
         <TextView

@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries>
+        <package android:name="net.osmand.plus" />
+        <package android:name="net.osmand" />
+    </queries>
+
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
@@ -25,7 +30,7 @@
         <service
             android:name=".DriveScreenNotificationListenerService"
             android:exported="true"
-            android:label="DriveScreen — acesso a sessões multimédia"
+            android:label="DriveScreen — notificações e multimédia"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />

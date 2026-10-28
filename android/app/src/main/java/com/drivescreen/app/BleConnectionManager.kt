@@ -315,24 +315,56 @@ internal class BleConnectionManager(
         sendMessage("MEDIA_STATE", payload)
     }
 
-    fun sendMediaCover(jpeg: ByteArray, width: Int, height: Int): Boolean {
-        if (!handshakeComplete) return false
-        return try {
-            pendingWrites.addAll(
-                BleProtocol.encodeMediaCover(jpeg, width, height, frameId++, mtu)
-            )
-            writeNextFrame()
-            true
-        } catch (exception: IllegalArgumentException) {
-            Log.e(TAG, "Não foi possível codificar a capa JPEG.", exception)
-            listener.onStatusChanged("capa de álbum inválida")
-            false
+    fun sendNavigationUpdate(update: NavigationUpdate?) {
+        if (!handshakeComplete) return
+        val payload = if (update == null) {
+            JSONObject().put("state", "idle").put("source", "NONE")
+        } else {
+            JSONObject()
+                .put("state", update.state)
+                .put("source", update.source)
+                .put("maneuver", update.maneuver)
+                .put("provider", update.provider)
+                .put("received_at_ms", android.os.SystemClock.elapsedRealtime())
+                .apply {
+                    if (update.instruction.isNotBlank()) {
+                        put("instruction", truncateUtf8(update.instruction, 128))
+                    }
+                    update.distanceM?.let { put("distance_m", it) }
+                }
         }
+        sendMessage("NAV_UPDATE", payload)
     }
 
-    fun clearMediaCover(): Boolean {
-        if (!handshakeComplete) return false
-        return sendMessage("MEDIA_COVER_CLEAR", JSONObject()) != null
+    fun sendNotificationList(items: List<DriveNotification>, privacyMode: Boolean) {
+        if (!handshakeComplete) return
+        val payloadItems = items.take(3).map { item ->
+            JSONObject()
+                .put("id", truncateUtf8(item.id, 64))
+                .put("app", truncateUtf8(item.app, 96))
+                .put("time_ms", item.timeMs)
+                .apply {
+                    if (!privacyMode) {
+                        put("title", truncateUtf8(item.title, 128))
+                        put("text", truncateUtf8(item.text, 128))
+                    }
+                }
+        }
+        sendMessage(
+            "NOTIF_LIST",
+            JSONObject()
+                .put("privacy_mode", privacyMode)
+                .put("items", org.json.JSONArray(payloadItems))
+        )
+    }
+
+    private fun truncateUtf8(value: String, maxBytes: Int): String {
+        var end = value.length
+        while (end > 0 && value.substring(0, end).toByteArray(Charsets.UTF_8).size > maxBytes) {
+            end--
+            if (end > 0 && Character.isHighSurrogate(value[end - 1])) end--
+        }
+        return value.substring(0, end)
     }
 
     private fun startScan() {

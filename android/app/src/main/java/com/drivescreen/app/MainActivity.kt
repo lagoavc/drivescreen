@@ -5,8 +5,6 @@ import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.media.MediaMetadata
 import android.net.Uri
 import android.media.session.MediaController
@@ -20,22 +18,17 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.Button
 import android.widget.EditText
+import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.IOException
 
 class MainActivity : AppCompatActivity() {
-    private data class AlbumCover(val jpeg: ByteArray, val width: Int, val height: Int)
-
     companion object {
         private const val TAG = "DriveScreen"
-        private const val MAX_COVER_JPEG_BYTES = 1024
-        private const val MAX_COVER_SIDE = 96
     }
 
     private lateinit var connectionStatus: TextView
@@ -44,6 +37,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var diagnosticInput: EditText
     private lateinit var mediaAccessStatus: TextView
     private lateinit var mediaStatus: TextView
+    private lateinit var navigationStatus: TextView
+    private lateinit var notificationStatus: TextView
+    private lateinit var privacySwitch: Switch
     private lateinit var connectionManager: BleConnectionManager
     private lateinit var mediaSessionManager: MediaSessionManager
 
@@ -54,11 +50,9 @@ class MainActivity : AppCompatActivity() {
     private var bleConnected = false
     private var sessionListenerRegistered = false
     private var mediaAccessPromptShown = false
-    private var lastSentCover: ByteArray? = null
-    private var lastSentCoverWidth = 0
-    private var cachedCoverMetadata: MediaMetadata? = null
-    private var cachedCover: AlbumCover? = null
-    private var coverCacheInitialized = false
+    private var privacyMode = true
+    private var latestNotifications: List<DriveNotification> = emptyList()
+    private var latestNavigation: NavigationUpdate? = null
     private var activeController: MediaController? = null
     private val controllerCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) {
@@ -102,20 +96,22 @@ class MainActivity : AppCompatActivity() {
         diagnosticInput = findViewById(R.id.diagnostic_input)
         mediaAccessStatus = findViewById(R.id.media_access_status)
         mediaStatus = findViewById(R.id.media_status)
+        navigationStatus = findViewById(R.id.navigation_status)
+        notificationStatus = findViewById(R.id.notification_status)
+        privacySwitch = findViewById(R.id.notification_privacy_switch)
         mediaSessionManager = getSystemService(MediaSessionManager::class.java)
 
         connectionManager = BleConnectionManager(
             context = applicationContext,
             listener = object : BleConnectionManager.Listener {
                 override fun onStatusChanged(status: String) {
-                    val wasConnected = bleConnected
                     bleConnected = connectionManager.isConnected
-                    if (wasConnected && !bleConnected) {
-                        lastSentCover = null
-                        lastSentCoverWidth = 0
-                    }
                     connectionStatus.text = "Estado BLE: $status"
-                    if (bleConnected) updateMediaState()
+                    if (bleConnected) {
+                        updateMediaState()
+                        connectionManager.sendNavigationUpdate(latestNavigation)
+                        connectionManager.sendNotificationList(latestNotifications, privacyMode)
+                    }
                 }
 
                 override fun onMessage(message: JSONObject) {
@@ -146,8 +142,16 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.connect_button).setOnClickListener {
             connectWithPermissions()
         }
+        findViewById<Button>(R.id.start_navigation_button).setOnClickListener {
+            startOsmAndNavigation()
+        }
         findViewById<Button>(R.id.media_access_button).setOnClickListener {
             openNotificationAccessSettings()
+        }
+        privacySwitch.isChecked = privacyMode
+        privacySwitch.setOnCheckedChangeListener { _, enabled ->
+            privacyMode = enabled
+            sendNotificationState()
         }
         findViewById<Button>(R.id.send_button).setOnClickListener {
             val text = diagnosticInput.text.toString().trim()
@@ -164,6 +168,11 @@ class MainActivity : AppCompatActivity() {
         refreshNotificationAccess()
     }
 
+    override fun onPause() {
+        DriveScreenNotificationStore.clearObserver()
+        super.onPause()
+    }
+
     override fun onDestroy() {
         unregisterSessionListener()
         activeController?.unregisterCallback(controllerCallback)
@@ -176,6 +185,10 @@ class MainActivity : AppCompatActivity() {
             unregisterSessionListener()
             setActiveController(null)
             mediaAccessStatus.text = "Multimédia: acesso não autorizado"
+            latestNotifications = emptyList()
+            latestNavigation = null
+            sendNotificationState()
+            sendNavigationState()
             if (!mediaAccessPromptShown) {
                 mediaAccessPromptShown = true
                 showMediaAccessPrompt()
@@ -184,19 +197,49 @@ class MainActivity : AppCompatActivity() {
         }
 
         mediaAccessStatus.text = "Multimédia: acesso autorizado"
+        DriveScreenNotificationStore.observe { items, navigation ->
+            mainHandler.post {
+                latestNotifications = items
+                latestNavigation = navigation
+                sendNotificationState()
+                sendNavigationState()
+            }
+        }
         registerSessionListener()
         refreshActiveSessions()
     }
 
+    private fun sendNotificationState() {
+        notificationStatus.text = when {
+            !hasNotificationListenerAccess() -> "Notificações: acesso não autorizado"
+            latestNotifications.isEmpty() -> "Notificações: nenhuma recente"
+            privacyMode -> "Notificações: ${latestNotifications.size} — conteúdo oculto"
+            else -> "Notificações: ${latestNotifications.size} — conteúdo visível"
+        }
+        if (bleConnected) {
+            connectionManager.sendNotificationList(latestNotifications, privacyMode)
+        }
+    }
+
+    private fun sendNavigationState() {
+        val update = latestNavigation
+        navigationStatus.text = when {
+            !hasNotificationListenerAccess() -> "Ativa o acesso a notificações para ler instruções"
+            update == null -> "Sem instruções de navegação recentes"
+            update.source == "REAL" -> "Instrução recebida de ${update.provider}"
+            else -> "Navegação ativa; instrução ainda não reconhecida"
+        }
+        if (bleConnected) connectionManager.sendNavigationUpdate(update)
+    }
+
     private fun showMediaAccessPrompt() {
         AlertDialog.Builder(this)
-            .setTitle("Autorizar sessões multimédia")
+            .setTitle("Ativar multimédia e notificações")
             .setMessage(
                 "O Android exige uma autorização especial nas Definições para a app " +
-                    "poder ler o título/artista e controlar a sessão de música ativa. " +
-                    "Ativa o acesso de notificações do DriveScreen. Nesta versão, o " +
-                    "acesso é usado para sessões multimédia; as notificações não são " +
-                    "recolhidas nem enviadas para o dispositivo."
+                    "poder ler sessões multimédia e notificações para as apresentar " +
+                    "no DriveScreen. O conteúdo das notificações é ocultado por " +
+                    "predefinição; podes alterar a privacidade nesta aplicação."
             )
             .setPositiveButton("Abrir Definições") { _, _ ->
                 openNotificationAccessSettings()
@@ -311,115 +354,40 @@ class MainActivity : AppCompatActivity() {
         }
         if (bleConnected) {
             connectionManager.sendMediaState(payload)
-            syncMediaCover(if (active) metadata else null)
         }
     }
 
-    private fun syncMediaCover(metadata: MediaMetadata?) {
-        if (!coverCacheInitialized || cachedCoverMetadata !== metadata) {
-            cachedCoverMetadata = metadata
-            cachedCover = metadata?.let(::encodeAlbumCover)
-            coverCacheInitialized = true
-        }
-        val cover = cachedCover
-        val previous = lastSentCover
-        if ((cover != null && cover.width == lastSentCoverWidth &&
-                cover.jpeg.contentEquals(previous ?: byteArrayOf())) ||
-            (cover == null && previous == null)) {
+    private fun startOsmAndNavigation() {
+        val destination = findViewById<EditText>(R.id.navigation_destination)
+            .text
+            .toString()
+            .trim()
+        if (destination.isEmpty()) {
+            navigationStatus.text = "Escreve um destino para iniciar a navegação"
             return
         }
 
-        val sent = if (cover == null) {
-            connectionManager.clearMediaCover()
-        } else {
-            connectionManager.sendMediaCover(cover.jpeg, cover.width, cover.height)
+        val osmandPackage = listOf("net.osmand.plus", "net.osmand").firstOrNull { packageName ->
+            try {
+                packageManager.getApplicationInfo(packageName, 0)
+                true
+            } catch (_: PackageManager.NameNotFoundException) {
+                false
+            }
         }
-        if (sent) {
-            lastSentCover = cover?.jpeg?.copyOf()
-            lastSentCoverWidth = cover?.width ?: 0
+        if (osmandPackage == null) {
+            navigationStatus.text = "Instala o OsmAnd para iniciar a navegação"
+            return
         }
-    }
 
-    private fun encodeAlbumCover(metadata: MediaMetadata): AlbumCover? {
-        val source = metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
-            ?: metadata.getBitmap(MediaMetadata.METADATA_KEY_ART)
-            ?: loadAlbumArtUri(metadata)
-            ?: return null
-        if (source.width <= 0 || source.height <= 0) return null
-
-        val cropSize = minOf(source.width, source.height)
-        val crop = Bitmap.createBitmap(
-            source,
-            (source.width - cropSize) / 2,
-            (source.height - cropSize) / 2,
-            cropSize,
-            cropSize
-        )
+        val navigationUri = Uri.parse("google.navigation:q=${Uri.encode(destination)}")
+        val intent = Intent(Intent.ACTION_VIEW, navigationUri).setPackage(osmandPackage)
         try {
-            var side = MAX_COVER_SIDE
-            while (side >= 48) {
-                val scaled = Bitmap.createScaledBitmap(crop, side, side, true)
-                try {
-                    for (quality in intArrayOf(70, 60, 50, 40)) {
-                        val output = ByteArrayOutputStream()
-                        if (!scaled.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
-                            Log.e(TAG, "O Android não conseguiu comprimir a capa do álbum.")
-                            return null
-                        }
-                        val jpeg = output.toByteArray()
-                        if (jpeg.size <= MAX_COVER_JPEG_BYTES) {
-                            return AlbumCover(jpeg, side, side)
-                        }
-                    }
-                } finally {
-                    if (scaled !== crop) scaled.recycle()
-                }
-                side /= 2
-            }
-        } finally {
-            if (crop !== source) crop.recycle()
-        }
-        Log.w(TAG, "A capa do álbum excede o limite de transferência BLE.")
-        return null
-    }
-
-    private fun loadAlbumArtUri(metadata: MediaMetadata): Bitmap? {
-        val uriText = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
-            ?: metadata.getString(MediaMetadata.METADATA_KEY_ART_URI)
-            ?: return null
-        val uri = Uri.parse(uriText)
-        val scheme = uri.scheme
-        if (scheme != "content" && scheme != "file" && scheme != "android.resource") {
-            Log.w(TAG, "URI da capa não suportado: $scheme")
-            return null
-        }
-
-        return try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, bounds)
-            }
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-                Log.w(TAG, "A URI da capa não contém uma imagem descodificável.")
-                return null
-            }
-
-            var sampleSize = 1
-            val largestSide = maxOf(bounds.outWidth, bounds.outHeight)
-            while (largestSide / sampleSize > MAX_COVER_SIDE * 2) sampleSize *= 2
-            val options = BitmapFactory.Options().apply {
-                inSampleSize = sampleSize
-                inPreferredConfig = Bitmap.Config.RGB_565
-            }
-            contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, options)
-            }
-        } catch (exception: IOException) {
-            Log.w(TAG, "Não foi possível abrir a URI da capa.", exception)
-            null
-        } catch (exception: SecurityException) {
-            Log.w(TAG, "Sem acesso à URI da capa.", exception)
-            null
+            startActivity(intent)
+            navigationStatus.text = "Destino enviado ao OsmAnd; confirma a rota na aplicação"
+        } catch (exception: ActivityNotFoundException) {
+            Log.e(TAG, "O OsmAnd instalado não aceita o pedido de navegação.", exception)
+            navigationStatus.text = "Não foi possível abrir a navegação no OsmAnd"
         }
     }
 
